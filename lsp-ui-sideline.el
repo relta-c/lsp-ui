@@ -63,6 +63,11 @@
   :type 'boolean
   :group 'lsp-ui-sideline)
 
+(defcustom lsp-ui-sideline-only-show-current-symbol-info t
+  "Whether to only show current symbol info."
+  :type 'boolean
+  :group 'lsp-ui-sideline)
+
 (defcustom lsp-ui-sideline-show-diagnostics t
   "Whether to show diagnostics messages in sideline."
   :type 'boolean
@@ -288,7 +293,7 @@ CURRENT is non-nil when the point is on the symbol."
         (let* ((final-string (lsp-ui-sideline--make-display-string info symbol current))
                (pos-ov (lsp-ui-sideline--find-line (length final-string) bol eol))
                (ov (when pos-ov (make-overlay (car pos-ov) (car pos-ov)))))
-          (when pos-ov
+          (when (and pos-ov (or current (not lsp-ui-sideline-only-show-current-symbol-info)))
             (overlay-put ov 'info info)
             (overlay-put ov 'symbol symbol)
             (overlay-put ov 'bounds bounds)
