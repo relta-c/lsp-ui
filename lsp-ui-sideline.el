@@ -112,6 +112,9 @@ when user changes current point."
   "Prefix to insert before the code action title.
 This can be used to insert, for example, an unicode character: 💡")
 
+(defvar-local lsp-ui-sideline--requests nil
+  "Pending requests sent by `lsp-ui-sideline'.")
+
 (defvar-local lsp-ui-sideline--ovs nil
   "Overlays used by `lsp-ui-sideline'.")
 
@@ -120,13 +123,16 @@ This can be used to insert, for example, an unicode character: 💡")
 
 (defvar-local lsp-ui-sideline--tag nil
   "Tag marking where the last operation was based.
-It is used to know when the cursor has changed of line or point.")
+It is used to know when the cursor has changed its line or point.")
 
 (defvar-local lsp-ui-sideline--last-width nil
   "Value of window's width on the last operation.
 It is used to know when the window has changed of width.")
 
 (defvar-local lsp-ui-sideline--timer nil)
+
+(defvar-local lsp-ui-sideline--code-actions nil
+  "Holds the latest code actions.")
 
 (defface lsp-ui-sideline-symbol
   '((t :foreground "grey"
@@ -203,7 +209,7 @@ if OFFSET is non-nil, it starts search OFFSET lines from user point line."
         (lsp-ui-sideline--find-line str-len bol eol nil offset)
       (and pos (or (> pos eol) (< pos bol))
            (push pos lsp-ui-sideline--occupied-lines)
-           (list pos index)))))
+           (list pos (1- index))))))
 
 (defun lsp-ui-sideline--delete-ov ()
   "Delete overlays."
@@ -258,6 +264,8 @@ CURRENT is non-nil when the point is on the symbol."
      str)))
 
 (defun lsp-ui-sideline--check-duplicate (symbol info)
+  "Check if there's already a SYMBOL containing INFO, unless `lsp-ui-sideline-ignore-duplicate'
+is set to t."
   (not (when lsp-ui-sideline-ignore-duplicate
          (--any (and (string= (overlay-get it 'symbol) symbol)
                      (string= (overlay-get it 'info) info))
@@ -330,46 +338,43 @@ CURRENT is non-nil when the point is on the symbol."
 
 (defun lsp-ui-sideline--split-long-lines (lines)
   "Fill LINES so that they are not longer than `lsp-ui-sideline-diagnostic-max-line-length' characters."
-  (mapcan (lambda (line)
-            (if (< (length line) lsp-ui-sideline-diagnostic-max-line-length)
-                (list line)
-              (with-temp-buffer
-                (let ((fill-column lsp-ui-sideline-diagnostic-max-line-length))
-                  (insert line)
-                  (fill-region (point-min) (point-max))
-                  (split-string (buffer-string) "\n")))))
-          lines))
+  (cl-mapcan (lambda (line)
+               (if (< (length line) lsp-ui-sideline-diagnostic-max-line-length)
+                   (list line)
+                 (with-temp-buffer
+                   (let ((fill-column lsp-ui-sideline-diagnostic-max-line-length))
+                     (insert line)
+                     (fill-region (point-min) (point-max))
+                     (split-string (buffer-string) "\n")))))
+             lines))
 
 (defun lsp-ui-sideline--diagnostics (bol eol)
   "Show diagnostics on the current line."
   (when (bound-and-true-p flycheck-mode)
-      (dolist (e (flycheck-overlay-errors-in bol (1+ eol)))
-        (let* ((lines (--> (flycheck-error-format-message-and-id e)
-                           (split-string it "\n")
-                           (lsp-ui-sideline--split-long-lines it)))
-               (display-lines (butlast lines (- (length lines) lsp-ui-sideline-diagnostic-max-lines)))
-               (offset 1))
-          (dolist (line display-lines)
-            (let* ((message (string-trim (replace-regexp-in-string "[\t ]+" " " line)))
-                   (len (length message))
-                   (level (flycheck-error-level e))
-                   (face (if (eq level 'info) 'success level))
-                   (margin (lsp-ui-sideline--margin-width))
-                   (message (progn (add-face-text-property 0 len 'lsp-ui-sideline-global nil message)
-                                   (add-face-text-property 0 len face nil message)
-                                   message))
-                   (string (concat (propertize " " 'display `(space :align-to (- right-fringe ,(lsp-ui-sideline--align len margin))))
-                                   message))
-                   (pos-ov (lsp-ui-sideline--find-line len bol eol nil offset))
-                   (ov (and pos-ov (make-overlay (car pos-ov) (car pos-ov))))
-                   )
-              (when pos-ov
-                (setq offset (car (cdr pos-ov)))
-                (overlay-put ov 'after-string string)
-                (overlay-put ov 'kind 'diagnotics)
-                (push ov lsp-ui-sideline--ovs))))))))
-
-(defvar-local lsp-ui-sideline--code-actions nil)
+    (dolist (e (flycheck-overlay-errors-in bol (1+ eol)))
+      (let* ((lines (--> (flycheck-error-format-message-and-id e)
+                         (split-string it "\n")
+                         (lsp-ui-sideline--split-long-lines it)))
+             (display-lines (butlast lines (- (length lines) lsp-ui-sideline-diagnostic-max-lines)))
+             (offset 1))
+        (dolist (line display-lines)
+          (let* ((message (string-trim (replace-regexp-in-string "[\t ]+" " " line)))
+                 (len (length message))
+                 (level (flycheck-error-level e))
+                 (face (if (eq level 'info) 'success level))
+                 (margin (lsp-ui-sideline--margin-width))
+                 (message (progn (add-face-text-property 0 len 'lsp-ui-sideline-global nil message)
+                                 (add-face-text-property 0 len face nil message)
+                                 message))
+                 (string (concat (propertize " " 'display `(space :align-to (- right-fringe ,(lsp-ui-sideline--align len margin))))
+                                 message))
+                 (pos-ov (lsp-ui-sideline--find-line len bol eol nil offset))
+                 (ov (and pos-ov (make-overlay (car pos-ov) (car pos-ov)))))
+            (when pos-ov
+              (setq offset (car (cdr pos-ov)))
+              (overlay-put ov 'after-string string)
+              (overlay-put ov 'kind 'diagnotics)
+              (push ov lsp-ui-sideline--ovs))))))))
 
 (defun lsp-ui-sideline-apply-code-actions nil
   "Choose and apply code action(s) on the current line."
@@ -384,7 +389,7 @@ CURRENT is non-nil when the point is on the symbol."
     (setq actions (seq-filter (-lambda ((&hash "kind"))
                                 (or (not kind)
                                     (s-match lsp-ui-sideline-actions-kind-regex kind)))
-                             actions)))
+                              actions)))
   (setq lsp-ui-sideline--code-actions actions)
   (dolist (ov lsp-ui-sideline--ovs)
     (when (eq (overlay-get ov 'kind) 'actions)
@@ -441,15 +446,15 @@ from the language server."
           (lsp-ui-sideline--diagnostics bol eol))
         (when (and lsp-ui-sideline-show-code-actions (or (lsp--capability "codeActionProvider")
                                                          (lsp--registered-capability "textDocument/codeAction")))
-          (lsp--send-request-async (lsp--make-request
-                                    "textDocument/codeAction"
-                                    (if (equal lsp-ui-sideline-update-mode 'line)
-                                        (list :textDocument doc-id
-                                              :range (lsp--region-to-range bol eol)
-                                              :context (list :diagnostics (lsp-cur-line-diagnostics)))
-                                      (lsp--text-document-code-action-params)))
-                                   (lambda (actions) (lsp-ui-sideline--code-actions actions bol eol))
-                                   'alive))
+          (lsp-request-async
+           "textDocument/codeAction"
+           (if (equal lsp-ui-sideline-update-mode 'line)
+               (list :textDocument doc-id
+                     :range (lsp--region-to-range bol eol)
+                     :context (list :diagnostics (lsp-cur-line-diagnostics)))
+             (lsp--text-document-code-action-params))
+           (lambda (actions) (lsp-ui-sideline--code-actions actions bol eol))
+           :mode 'alive))
         ;; Go through all symbols and request hover information.  Note that the symbols are
         ;; traversed backwards as `forward-symbol' with a positive argument will jump just past the
         ;; current symbol.  By going from the end of the line towards the front, point will be placed
@@ -469,21 +474,23 @@ from the language server."
                 ;; Skip strings and comments
                 (when (and symbol (not in-string) outside-comment)
                   (push (list symbol tag bounds (lsp--position (1- line-widen) (- (point) bol))) symbols))))
-            (--each-indexed symbols
-              (-let (((symbol tag bounds position) it)
-                     (index it-index))
-                (lsp--send-request-async
-                 (lsp--make-request
-                  "textDocument/hover"
-                  (list :textDocument doc-id :position position))
-                 (lambda (info)
-                   (when (eq index 0)
-                     (dolist (ov lsp-ui-sideline--ovs)
-                       (when (eq (overlay-get ov 'kind) 'info)
-                         (setq lsp-ui-sideline--occupied-lines
-                               (delq (overlay-get ov 'position) lsp-ui-sideline--occupied-lines))
-                         (delete-overlay ov))))
-                   (when info (lsp-ui-sideline--push-info symbol tag bounds info bol eol))))))))))))
+            (seq-do #'lsp--cancel-request lsp-ui-sideline--requests)
+            (dolist (ov lsp-ui-sideline--ovs)
+              (when (eq (overlay-get ov 'kind) 'info)
+                (setq lsp-ui-sideline--occupied-lines
+                      (delq (overlay-get ov 'position) lsp-ui-sideline--occupied-lines))
+                (delete-overlay ov)))
+            (setq lsp-ui-sideline--requests
+                  (mapcar (lambda (it)
+                            (-let (((symbol tag bounds position) it))
+                              (plist-get (lsp-request-async
+                                          "textDocument/hover"
+                                          (list :textDocument doc-id :position position)
+                                          (lambda (info)
+                                            (when info (lsp-ui-sideline--push-info symbol tag bounds info bol eol)))
+                                          :mode 'alive)
+                                         :id)))
+                          symbols))))))))
 
 (defun lsp-ui-sideline--stop-p ()
   "Return non-nil if the sideline should not be display."
@@ -534,6 +541,7 @@ This does not toggle display of flycheck diagnostics or code actions."
   (lsp-ui-sideline))
 
 (defun lsp-ui-sideline--erase (&rest _)
+  "Remove all sideline overlays and delete last tag."
   (when (bound-and-true-p lsp-ui-sideline-mode)
     (ignore-errors
       (lsp-ui-sideline--delete-ov)
